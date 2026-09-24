@@ -1,5 +1,4 @@
 rules_version = '2';
-service cloud.firestore {
 
 // NH HSE Portal — Firestore security rules.
 //
@@ -8,73 +7,75 @@ service cloud.firestore {
 // as the original build's requireRole()/scope() checks, translated to
 // Firestore's rule language. Deploy with: firebase deploy --only firestore:rules
 // (see SETUP.md).
-function signedIn() { return request.auth != null; }
+service cloud.firestore {
+  match /databases/{database}/documents {
 
-function me() {
-  return get(/databases/$(database)/documents/members/$(request.auth.uid)).data;
-}
+    function signedIn() { return request.auth != null; }
 
-function isActiveMember() {
-  return signedIn()
-    && exists(/databases/$(database)/documents/members/$(request.auth.uid))
-    && me().active == true
-    && (!('expires' in me()) || me().expires == null || me().expires > request.time);
-}
+    function me() {
+      return get(/databases/$(database)/documents/members/$(request.auth.uid)).data;
+    }
 
-function role() { return me().role; }
-function myEntity() { return me().entity; }
+    function isActiveMember() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/members/$(request.auth.uid))
+        && me().active == true
+        && (!('expires' in me()) || me().expires == null || me().expires > request.time);
+    }
 
-function groupWide() {
-  return role() in ['group', 'gcbdo', 'committee', 'independent'];
-}
+    function role() { return me().role; }
+    function myEntity() { return me().entity; }
 
-// Entity match for records that carry an `entity` field.
-function sameEntity(entity) {
-  return groupWide() || myEntity() == entity;
-}
+    function groupWide() {
+      return role() in ['group', 'gcbdo', 'committee', 'independent'];
+    }
 
-match /databases/{database}/documents {
+    // Entity match for records that carry an `entity` field.
+    function sameEntity(entity) {
+      return groupWide() || myEntity() == entity;
+    }
 
-  // Members — invite/role list. Only 'group' can write; any active member
-  // can read (needed to resolve names in the UI), but only 'group'/'it'
-  // can read the FULL collection (enforced client-side via getState()'s
-  // role check as well — this rule allows the read, the app doesn't call
-  // it for other roles).
-  match /members/{uid} {
-    // A signed-in user may always read their OWN profile doc — even
-    // before it exists yet (mid-bootstrap) or if it's inactive/expired —
-    // so the app can show the right screen instead of racing the write
-    // that creates it. Any active member may read any OTHER member's doc
-    // (needed to resolve names/roles in the UI). A signed-out visitor may
-    // only run the narrow "is this deployment empty yet?" check the
-    // sign-in screen needs before anyone has an account (limit(1) queries
-    // only — this does not expose the member list to the public internet).
-    allow get: if isActiveMember() || (signedIn() && request.auth.uid == uid);
-    allow list: if isActiveMember()
-      || (request.auth == null && request.query.limit <= 1);
-    // Bootstrap: the very first account may create itself as 'group' only
-    // when the members collection is still empty.
-    allow create: if (isActiveMember() && role() == 'group')
-      || (signedIn() && request.auth.uid == uid && request.resource.data.role == 'group'
-          && !exists(/databases/$(database)/documents/members/$(uid)));
-    allow update, delete: if isActiveMember() && role() == 'group';
+    // Members — invite/role list. Only 'group' can write; any active member
+    // can read (needed to resolve names in the UI), but only 'group'/'it'
+    // can read the FULL collection (enforced client-side via getState()'s
+    // role check as well — this rule allows the read, the app doesn't call
+    // it for other roles).
+    match /members/{uid} {
+      // A signed-in user may always read their OWN profile doc — even
+      // before it exists yet (mid-bootstrap) or if it's inactive/expired —
+      // so the app can show the right screen instead of racing the write
+      // that creates it. Any active member may read any OTHER member's doc
+      // (needed to resolve names/roles in the UI). A signed-out visitor may
+      // only run the narrow "is this deployment empty yet?" check the
+      // sign-in screen needs before anyone has an account (limit(1)
+      // queries only — this does not expose the member list to the public
+      // internet).
+      allow get: if isActiveMember() || (signedIn() && request.auth.uid == uid);
+      allow list: if isActiveMember()
+        || (request.auth == null && request.query.limit <= 1);
+      // Bootstrap: the very first account may create itself as 'group' only
+      // when the members collection is still empty.
+      allow create: if (isActiveMember() && role() == 'group')
+        || (signedIn() && request.auth.uid == uid && request.resource.data.role == 'group'
+            && !exists(/databases/$(database)/documents/members/$(uid)));
+      allow update, delete: if isActiveMember() && role() == 'group';
+    }
+
+    // Generic records collection (entities, controls, audits, instances,
+    // findings, actions, documents, reports, criteria, jobs, uploads, runs…)
+    // — entity-scoped read/write, matching the original scope() function.
+    match /records/{id} {
+      allow read: if isActiveMember() && sameEntity(resource.data.entity);
+      allow create: if isActiveMember() && sameEntity(request.resource.data.entity);
+      allow update: if isActiveMember() && sameEntity(resource.data.entity) && sameEntity(request.resource.data.entity);
+      allow delete: if false; // records are never hard-deleted (audit integrity)
+    }
+
+    // Events — append-only audit trail.
+    match /events/{id} {
+      allow read: if isActiveMember() && sameEntity(resource.data.entity);
+      allow create: if isActiveMember() && sameEntity(request.resource.data.entity);
+      allow update, delete: if false;
+    }
   }
-
-  // Generic records collection (entities, controls, audits, instances,
-  // findings, actions, documents, reports, criteria, jobs, uploads, runs…)
-  // — entity-scoped read/write, matching the original scope() function.
-  match /records/{id} {
-    allow read: if isActiveMember() && sameEntity(resource.data.entity);
-    allow create: if isActiveMember() && sameEntity(request.resource.data.entity);
-    allow update: if isActiveMember() && sameEntity(resource.data.entity) && sameEntity(request.resource.data.entity);
-    allow delete: if false; // records are never hard-deleted (audit integrity)
-  }
-
-  // Events — append-only audit trail.
-  match /events/{id} {
-    allow read: if isActiveMember() && sameEntity(resource.data.entity);
-    allow create: if isActiveMember() && sameEntity(request.resource.data.entity);
-    allow update, delete: if false;
-  }
-}
 }
