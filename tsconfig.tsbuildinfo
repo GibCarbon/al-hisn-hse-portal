@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/components/ui/button.tsx","./src/components/ui/dialog.tsx","./src/components/ui/tabs.tsx","./src/lib/api.ts","./src/lib/auth.tsx","./src/lib/engine.ts","./src/lib/firebase.ts","./src/lib/utils.ts"],"checkPending":true,"version":"5.9.3"}

@@ -1,0 +1,14 @@
+rules_version = '2';
+
+// Evidence files (uploaded documents, chunked uploads) — any signed-in,
+// active member may read/write within their own path prefix. Firestore
+// rules (firestore.rules) are the real authorization boundary for WHICH
+// records/entities a person can see; these Storage rules just require
+// authentication so files aren't publicly world-readable.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
