@@ -40,7 +40,13 @@ match /databases/{database}/documents {
   // role check as well — this rule allows the read, the app doesn't call
   // it for other roles).
   match /members/{uid} {
-    allow read: if isActiveMember();
+    // Any active member can read the full collection (needed to resolve
+    // names/roles in the UI). A signed-out visitor may only run the
+    // narrow "is this deployment empty yet?" check the sign-in screen
+    // needs before anyone has an account (limit(1) queries only — this
+    // does not expose the member list to the public internet).
+    allow read: if isActiveMember()
+      || (request.auth == null && request.query.limit <= 1);
     // Bootstrap: the very first account may create itself as 'group' only
     // when the members collection is still empty.
     allow create: if (isActiveMember() && role() == 'group')
