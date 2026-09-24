@@ -132,11 +132,24 @@ export async function principal(member: Member): Promise<R> {
 
 // ── bootstrap: seed the 7 NH entities + 796-control reference workbook ──
 export async function seedReferenceData(p: R) {
-  const existingEntities = await listRecords(p, 'entity');
-  if (existingEntities.length) return { alreadySeeded: true };
+  const workbookControls = (workbook as any).controls as any[];
+  const [existingEntities, existingControls, existingCriteria] = await Promise.all([
+    listRecords(p, 'entity'),
+    listRecords(p, 'control'),
+    listRecords(p, 'criterion'),
+  ]);
+  // Previously this bailed out entirely once any entities existed, which meant a partial/interrupted
+  // seed (e.g. only one entity's controls written before the run stopped) could never be completed —
+  // every later app load's bootstrap call would see existingEntities.length and no-op forever, leaving
+  // the other entities' checklists permanently empty. Instead, backfill whatever is missing.
+  if (existingEntities.length && existingControls.length >= workbookControls.length && existingCriteria.some((c) => c.id === 'internal-criterion')) {
+    return { alreadySeeded: true };
+  }
   requireRole(p, 'group');
+  const existingEntityIds = new Set(existingEntities.map((e) => e.id));
   for (const name of (workbook as any).entities || DEMO_NAMES) {
     const id = slug(name);
+    if (existingEntityIds.has(id)) continue;
     await createRecord(
       'entity',
       id,
@@ -146,44 +159,51 @@ export async function seedReferenceData(p: R) {
         ceo: '',
         mr: '',
         location: 'Needs confirmation',
-        divisions: [...new Set((workbook as any).controls.filter((c: any) => c.entity === name).map((c: any) => c.scope))],
+        divisions: [...new Set(workbookControls.filter((c) => c.entity === name).map((c) => c.scope))],
       },
       null,
       id
     );
   }
-  for (const c of (workbook as any).controls) {
+  const existingControlIds = new Set(existingControls.map((c) => c.id));
+  let addedControls = 0;
+  for (const c of workbookControls) {
+    const id = `${slug(c.entity)}:${c.originalId}`;
+    if (existingControlIds.has(id)) continue;
     await createRecord(
       'control',
       slug(c.entity),
       { ...c, entityName: c.entity, criterionStatus: 'Unvalidated workbook reference', active: true },
       null,
-      `${slug(c.entity)}:${c.originalId}`
+      id
+    );
+    addedControls++;
+  }
+  if (!existingCriteria.some((c) => c.id === 'internal-criterion')) {
+    await createRecord(
+      'criterion',
+      'group',
+      {
+        name: 'NH internal document-control and responsibility check',
+        authority: 'NH internal',
+        clause: 'NH-DC-01',
+        versionLabel: '1',
+        wording:
+          'Requested evidence must be current, approved and consistent. Reporting-line contradictions require clarification.',
+        source: 'NH HSE governance and assurance master specification',
+        basis: 'Internal',
+        status: 'Approved',
+        aiAllowed: false,
+        jurisdiction: 'All scoped audits',
+        verifiedBy: p.name,
+        verifiedAt: now(),
+      },
+      null,
+      'internal-criterion'
     );
   }
-  await createRecord(
-    'criterion',
-    'group',
-    {
-      name: 'NH internal document-control and responsibility check',
-      authority: 'NH internal',
-      clause: 'NH-DC-01',
-      versionLabel: '1',
-      wording:
-        'Requested evidence must be current, approved and consistent. Reporting-line contradictions require clarification.',
-      source: 'NH HSE governance and assurance master specification',
-      basis: 'Internal',
-      status: 'Approved',
-      aiAllowed: false,
-      jurisdiction: 'All scoped audits',
-      verifiedBy: p.name,
-      verifiedAt: now(),
-    },
-    null,
-    'internal-criterion'
-  );
-  await logEvent(p, 'REFERENCE_DATA_SEEDED', { entity: 'group' }, { entities: DEMO_NAMES.length, controls: (workbook as any).controls.length });
-  return { seeded: true };
+  await logEvent(p, 'REFERENCE_DATA_SEEDED', { entity: 'group' }, { entities: DEMO_NAMES.length, controls: addedControls });
+  return { seeded: true, addedControls };
 }
 
 // ── state assembly (mirrors GET /api/state) ─────────────────────────────
