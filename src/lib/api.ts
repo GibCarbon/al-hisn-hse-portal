@@ -141,8 +141,20 @@ export async function seedReferenceData(p: R) {
   // Previously this bailed out entirely once any entities existed, which meant a partial/interrupted
   // seed (e.g. only one entity's controls written before the run stopped) could never be completed —
   // every later app load's bootstrap call would see existingEntities.length and no-op forever, leaving
-  // the other entities' checklists permanently empty. Instead, backfill whatever is missing.
-  if (existingEntities.length && existingControls.length >= workbookControls.length && existingCriteria.some((c) => c.id === 'internal-criterion')) {
+  // the other entities' checklists permanently empty. Instead, backfill whatever is missing, and also
+  // repair any already-written control whose `entity` field is wrong (see the mismatch note below —
+  // every control ever seeded by an earlier build of this function has this bug, not just missing ones).
+  const existingControlsById = new Map(existingControls.map((c) => [c.id, c]));
+  const controlsNeedingRepair = workbookControls.filter((c) => {
+    const existing = existingControlsById.get(`${slug(c.entity)}:${c.originalId}`);
+    return existing && existing.entity !== slug(c.entity);
+  }).length;
+  if (
+    existingEntities.length &&
+    existingControls.length >= workbookControls.length &&
+    controlsNeedingRepair === 0 &&
+    existingCriteria.some((c) => c.id === 'internal-criterion')
+  ) {
     return { alreadySeeded: true };
   }
   requireRole(p, 'group');
@@ -165,15 +177,28 @@ export async function seedReferenceData(p: R) {
       id
     );
   }
-  const existingControlIds = new Set(existingControls.map((c) => c.id));
   let addedControls = 0;
+  let repairedControls = 0;
   for (const c of workbookControls) {
-    const id = `${slug(c.entity)}:${c.originalId}`;
-    if (existingControlIds.has(id)) continue;
+    const correctEntity = slug(c.entity);
+    const id = `${correctEntity}:${c.originalId}`;
+    const existing = existingControlsById.get(id);
+    if (existing) {
+      // Repair records written by an earlier, buggy build of this function: `c` (the raw workbook
+      // row) carries its own `entity` field holding the entity's plain NAME (e.g. "Bloom Holding"),
+      // and createRecord used to merge that payload in AFTER the `entity` argument — so that raw
+      // name silently clobbered the slug, leaving every seeded control's `entity` field mismatched
+      // against entity.id ("bloom-holding") and permanently invisible to every entity===id filter.
+      if (existing.entity !== correctEntity) {
+        await patchRecord(existing, { entity: correctEntity, entityName: c.entity });
+        repairedControls++;
+      }
+      continue;
+    }
     await createRecord(
       'control',
-      slug(c.entity),
-      { ...c, entityName: c.entity, criterionStatus: 'Unvalidated workbook reference', active: true },
+      correctEntity,
+      { ...c, entity: correctEntity, entityName: c.entity, criterionStatus: 'Unvalidated workbook reference', active: true },
       null,
       id
     );
@@ -202,8 +227,8 @@ export async function seedReferenceData(p: R) {
       'internal-criterion'
     );
   }
-  await logEvent(p, 'REFERENCE_DATA_SEEDED', { entity: 'group' }, { entities: DEMO_NAMES.length, controls: addedControls });
-  return { seeded: true, addedControls };
+  await logEvent(p, 'REFERENCE_DATA_SEEDED', { entity: 'group' }, { entities: DEMO_NAMES.length, controls: addedControls, repairedControls });
+  return { seeded: true, addedControls, repairedControls };
 }
 
 // ── state assembly (mirrors GET /api/state) ─────────────────────────────
