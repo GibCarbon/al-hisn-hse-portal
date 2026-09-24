@@ -1,4 +1,5 @@
 rules_version = '2';
+service cloud.firestore {
 
 // NH HSE Portal — Firestore security rules.
 //
@@ -40,12 +41,16 @@ match /databases/{database}/documents {
   // role check as well — this rule allows the read, the app doesn't call
   // it for other roles).
   match /members/{uid} {
-    // Any active member can read the full collection (needed to resolve
-    // names/roles in the UI). A signed-out visitor may only run the
-    // narrow "is this deployment empty yet?" check the sign-in screen
-    // needs before anyone has an account (limit(1) queries only — this
-    // does not expose the member list to the public internet).
-    allow read: if isActiveMember()
+    // A signed-in user may always read their OWN profile doc — even
+    // before it exists yet (mid-bootstrap) or if it's inactive/expired —
+    // so the app can show the right screen instead of racing the write
+    // that creates it. Any active member may read any OTHER member's doc
+    // (needed to resolve names/roles in the UI). A signed-out visitor may
+    // only run the narrow "is this deployment empty yet?" check the
+    // sign-in screen needs before anyone has an account (limit(1) queries
+    // only — this does not expose the member list to the public internet).
+    allow get: if isActiveMember() || (signedIn() && request.auth.uid == uid);
+    allow list: if isActiveMember()
       || (request.auth == null && request.query.limit <= 1);
     // Bootstrap: the very first account may create itself as 'group' only
     // when the members collection is still empty.
@@ -71,4 +76,5 @@ match /databases/{database}/documents {
     allow create: if isActiveMember() && sameEntity(request.resource.data.entity);
     allow update, delete: if false;
   }
+}
 }
